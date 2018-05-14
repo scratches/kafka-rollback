@@ -4,6 +4,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.CountDownLatch;
 
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -32,9 +33,18 @@ public class KafkaApplication {
 	private void send() {
 		KafkaProducer<byte[], byte[]> producer = createKafkaProducer("bootstrap.servers",
 				"localhost:9092");
+		CountDownLatch latch = new CountDownLatch(5);
 		for (int i = 0; i < 5; i++) {
+			System.err.println("***** Send foo" + i);
 			producer.send(
-					new ProducerRecord<byte[], byte[]>("input", ("foo" + i).getBytes()));
+					new ProducerRecord<byte[], byte[]>("input", ("foo" + i).getBytes()),
+					(m, e) -> latch.countDown());
+		}
+		try {
+			latch.await();
+		}
+		catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
 		}
 	}
 
@@ -44,38 +54,42 @@ public class KafkaApplication {
 
 		producer.initTransactions();
 
-		KafkaConsumer<byte[], byte[]> consumer = createKafkaConsumer("bootstrap.servers",
-				"localhost:9092", "group.id", group, "isolation.level", "read_committed");
-
-		consumer.subscribe(Arrays.asList("input"));
-
 		while (true) {
-			ConsumerRecords<byte[], byte[]> records = consumer.poll(Long.MAX_VALUE);
-			System.err.println("***** Begin");
-			producer.beginTransaction();
-			try {
-				Map<TopicPartition, OffsetAndMetadata> currentOffsets = new LinkedHashMap<>();
-				for (ConsumerRecord<byte[], byte[]> record : records) {
-					currentOffsets.put(
-							new TopicPartition(record.topic(), record.partition()),
-							new OffsetAndMetadata(record.offset()));
-					System.err.println("***** " + new String(record.value()));
-					producer.send(new ProducerRecord<byte[], byte[]>("output",
-							record.key(), transform(record.value())));
-				}
-				producer.sendOffsetsToTransaction(currentOffsets, group);
-				System.err.println("***** Commit");
-				producer.commitTransaction();
-			}
-			catch (Exception e) {
+			KafkaConsumer<byte[], byte[]> consumer = createKafkaConsumer(
+					"bootstrap.servers", "localhost:9092", "group.id", group,
+					"isolation.level", "read_committed");
+
+			consumer.subscribe(Arrays.asList("input"));
+
+			while (true) {
+				ConsumerRecords<byte[], byte[]> records = consumer.poll(Long.MAX_VALUE);
+				System.err.println("***** Begin");
+				producer.beginTransaction();
 				try {
-					System.err.println("***** Rollback");
-					producer.abortTransaction();
+					Map<TopicPartition, OffsetAndMetadata> currentOffsets = new LinkedHashMap<>();
+					for (ConsumerRecord<byte[], byte[]> record : records) {
+						currentOffsets.put(
+								new TopicPartition(record.topic(), record.partition()),
+								new OffsetAndMetadata(record.offset()));
+						System.err.println("***** " + new String(record.value()));
+						producer.send(new ProducerRecord<byte[], byte[]>("output",
+								record.key(), transform(record.value())));
+					}
+					producer.sendOffsetsToTransaction(currentOffsets, group);
+					System.err.println("***** Commit");
+					producer.commitTransaction();
 				}
-				catch (Exception ex) {
+				catch (Exception e) {
+					try {
+						System.err.println("***** Rollback");
+						producer.abortTransaction();
+					}
+					catch (Exception ex) {
+					}
 					break;
 				}
 			}
+
 		}
 	}
 
@@ -95,6 +109,8 @@ public class KafkaApplication {
 				ByteArrayDeserializer.class.getName());
 		properties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
 				ByteArrayDeserializer.class.getName());
+		properties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+		properties.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
 		return new KafkaConsumer<>(properties);
 	}
 
