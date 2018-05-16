@@ -26,7 +26,11 @@ public class KafkaApplication {
 		app.run();
 	}
 
-	private String group = "mygroup";
+	private String group = "mytestgroup";
+ 	private String inputTopic = "mytestinput";
+ 	private String outputTopic = "mytestoutput";
+ 	private String transactionalId = "mytestTranactionalId";
+
 
 	private int count = 0;
 
@@ -37,7 +41,7 @@ public class KafkaApplication {
 		for (int i = 0; i < 5; i++) {
 			System.err.println("***** Send foo" + i);
 			producer.send(
-					new ProducerRecord<byte[], byte[]>("input", ("foo" + i).getBytes()),
+					new ProducerRecord<byte[], byte[]>(inputTopic, ("foo" + i).getBytes()),
 					(m, e) -> latch.countDown());
 		}
 		try {
@@ -50,7 +54,7 @@ public class KafkaApplication {
 
 	private void run() {
 		KafkaProducer<byte[], byte[]> producer = createKafkaProducer("bootstrap.servers",
-				"localhost:9092", "transactional.id", "mytx");
+				"localhost:9092", "transactional.id", transactionalId);
 
 		producer.initTransactions();
 
@@ -58,8 +62,10 @@ public class KafkaApplication {
 			KafkaConsumer<byte[], byte[]> consumer = createKafkaConsumer(
 					"bootstrap.servers", "localhost:9092", "group.id", group,
 					"isolation.level", "read_committed");
+			
+			Runtime.getRuntime().addShutdownHook(new Thread(consumer::close));
 
-			consumer.subscribe(Arrays.asList("input"));
+			consumer.subscribe(Arrays.asList(inputTopic));
 
 			while (true) {
 				ConsumerRecords<byte[], byte[]> records = consumer.poll(Long.MAX_VALUE);
@@ -70,9 +76,9 @@ public class KafkaApplication {
 					for (ConsumerRecord<byte[], byte[]> record : records) {
 						currentOffsets.put(
 								new TopicPartition(record.topic(), record.partition()),
-								new OffsetAndMetadata(record.offset()));
+								new OffsetAndMetadata(record.offset() + 1));
 						System.err.println("***** " + new String(record.value()));
-						producer.send(new ProducerRecord<byte[], byte[]>("output",
+						producer.send(new ProducerRecord<byte[], byte[]>(outputTopic,
 								record.key(), transform(record.value())));
 					}
 					producer.sendOffsetsToTransaction(currentOffsets, group);
@@ -86,6 +92,7 @@ public class KafkaApplication {
 					}
 					catch (Exception ex) {
 					}
+					consumer.close();
 					break;
 				}
 			}
